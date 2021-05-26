@@ -9,12 +9,14 @@ import numpy as np
 import torch
 from torch.optim import Adam
 
+from utils import get_images, accuracy
+
 # load dataset
 
 dataset = MNIST(root="../data", transform=ToTensor())
 
 validation_size = 10000
-batch_size = 80
+batch_size = 100
 half_batch_size = int(batch_size/2)
 train_size = len(dataset) - validation_size
 
@@ -30,7 +32,7 @@ n_actions = 2
 vocab_size = 10
 
 # train hyperparams
-num_episodes = 500
+num_episodes = 200
 lr = 0.1
 
 send = Sender(in_size=input_size, hidden_size=hidden_size, 
@@ -39,94 +41,93 @@ send = Sender(in_size=input_size, hidden_size=hidden_size,
 recv = Receiver(in_size=input_size, vocabulary_size_sender = vocab_size, 
     hidden_size=hidden_size, n_actions = n_actions, lr=lr)
 
+def reward(act, targets):
 
-def get_images(imgs, labels):
-    
-    num_images = int(len(labels)/2)
-    imgsa = imgs[:num_images]
-    imgsb = imgs[num_images:]
-    imgsa_receiver = torch.empty(imgsa.shape)
-    imgsb_receiver = torch.empty(imgsa.shape)
+    rew = torch.zeros(act.shape)
 
-    targets = np.random.randint(2, size=num_images)
-    
-    for i in range(int(len(labels)/2)):
-        if targets[i]==0:
-            imgsa_receiver[i] = imgsa[i]
-            imgsb_receiver[i] = imgsb[i]
-        else:
-            imgsa_receiver[i] = imgsb[i]
-            imgsb_receiver[i] = imgsa[i]
+    for i in range(len(act)):
+        if (act[i] == targets[i]):
+            rew[i] = 1
+            
+    return rew
 
-    return imgsa, imgsb, imgsa_receiver, imgsb_receiver, targets, targets
 
-def get_reward(act, imgsa_s, imgsa_r, imgsb_r):
-    rewards = torch.empty([len(act)])
+def batch(send, recv, images_batch, send_opt=None, recv_opt=None):
 
-    for idx, val in enumerate(act.numpy()):
-        rewards[idx] = 0
-        if (val == 0):
-            if (torch.equal(imgsa_r[idx], imgsa_s[idx]) ):
-                rewards[idx] = 1
-        if (val == 1):
-            if (torch.equal(imgsb_r[idx], imgsa_s[idx]) ):
-                rewards[idx] = 1              
-    return rewards
+    imgsa_s, imgsb_s, imgsa_r, imgsb_r, targets = get_images(images_batch)
 
-#TRAIN LOOP
+    mex, logprobs_s, entropy_s = send.model(imgsa_s, imgsb_s)
+    act, logprobs_r, entropy_r = recv.model(imgsa_r, imgsb_r, mex.detach())
 
-send_opt = Adam(send.model.parameters(), lr=lr)
-recv_opt = Adam(recv.model.parameters(), lr=lr)
+    error = reward(act, targets) #torch.abs(act - targets) il - e` gia nell'update mi pare
+    acc = accuracy(act, targets) #torch.mean(error.detach().double())
 
-for ep in range(num_episodes):
-    print("episode=", ep)
+    send_loss = send.loss(error, logprobs_s)
+    recv_loss = recv.loss(error, logprobs_r)
 
-    losslist_r = []; losslist_s = []; acclist_s = [];  acclist_r = []
+    if send_opt is not None:
 
-    for imgs, labs in train_loader:
-
-        imgsa_s, imgsb_s, imgsa_r, imgsb_r, send_targets, recv_targets = get_images(imgs, labs)
-
-        mex, logprobs_s = send.model(imgsa_s, imgsb_s)
-        #print("mex=", mex)
-        act, logprobs_r = recv.model(imgsa_r, imgsb_r, mex.detach())
-        #print("act=", act)
-        #print("logprobs_r=", logprobs_r)
-
-        # COMPUTE ERROR 
-        send_error = torch.abs(act - torch.tensor(send_targets)) 
-        #print("error=", send_error)
-        #print("CHECK REQUIRES GRAD")
-        #print("act", act.requires_grad)
-        #print("logprobs", logprobs_s.requires_grad)
-        #print("send_targets", torch.tensor(send_targets).requires_grad)
-        #print("send_error", send_error.requires_grad)
         # SENDER LOSS
-        send_loss, send_acc = send.loss(send_error, logprobs_s)
-
         send_opt.zero_grad()
         send_loss.backward()
         send_opt.step()
 
-        
-        # RECEIVER LOSS
-        recv_error = torch.abs(act.detach() - recv_targets) 
-        recv_loss, recv_acc = recv.loss(recv_error, logprobs_r)
+    if recv_opt is not None:
 
+        # RECEIVER LOSS
         recv_opt.zero_grad()
         recv_loss.backward()
         recv_opt.step()
 
-        losslist_s.append(send_loss.detach().numpy())
-        losslist_r.append(recv_loss.detach().numpy())        
-        acclist_s.append(send_acc.detach().numpy())
-        acclist_r.append(recv_acc.detach().numpy())
-       
-    print("sender loss", np.mean(losslist_s))
-    print("receiver loss", np.mean(losslist_r))
-    
-    print("sender accuracy", np.mean(acclist_s))
-    print("receiver accuracy", np.mean(acclist_r))
+    return error, send_loss, recv_loss, len(imgsa_s), acc
+
+
+#TRAIN LOOP
+#send.model.load_state_dict(torch.load('sender_model_mnist.pth'))
+#recv.model.load_state_dict(torch.load('receiver_model_mnist.pth'))
+
+send_opt = Adam(send.model.parameters(), lr=lr)
+recv_opt = Adam(recv.model.parameters(), lr=lr)
+
+train_send_losses, train_recv_losses, val_send_losses, val_recv_losses, val_accuracy = [], [], [], [], []
+
+for ep in range(num_episodes):
+    print("episode=", ep)
+
+    # TRAIN STEP
+    print("train")
+    for imgs, _ in train_loader:
+
+        train_error, train_send_loss, train_recv_loss, _, train_acc = batch(send, recv, imgs, send_opt, recv_opt)
+
+    print("evaluation")
+    # EVALUATION STEP
+    with torch.no_grad():
+
+        results = [ batch(send, recv, imgs) for imgs, _ in val_loader ]
+        
+    val_error, val_send_loss, val_recv_loss, nums, val_acc = zip(*results)
+
+    total = np.sum(nums)
+    send_train_avg_loss = np.sum(np.multiply(train_send_loss.detach().numpy(), nums))/total
+    recv_train_avg_loss = np.sum(np.multiply(train_recv_loss.detach().numpy(), nums))/total
+    train_send_losses.append(send_train_avg_loss)
+    train_recv_losses.append(recv_train_avg_loss)
+
+    send_val_avg_loss = np.sum(np.multiply(val_send_loss, nums))/total
+    recv_val_avg_loss = np.sum(np.multiply(val_recv_loss, nums))/total
+    val_send_losses.append(send_val_avg_loss)
+    val_recv_losses.append(recv_val_avg_loss)
+        
+    val_avg_accuracy = np.sum(np.multiply(val_acc, nums))/total
+    val_accuracy.append(val_avg_accuracy)
+
+    print("sender train loss", send_train_avg_loss)
+    print("receiver train loss", recv_train_avg_loss)
+    print("sender val loss", send_val_avg_loss)
+    print("receiver val loss", recv_val_avg_loss)
+    print("accuracy", val_avg_accuracy)
+    print("\n")
 
 
 torch.save(send.model.state_dict(), 'sender_model_mnist.pth')

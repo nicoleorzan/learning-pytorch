@@ -38,8 +38,10 @@ class Sender_Net(nn.Module):
             actions = dist.argmax(dim=1)
 
         logprobs = dist.log_prob(actions)
+
+        entropy = dist.entropy()
         
-        return actions, logprobs
+        return actions, logprobs, entropy
 
 class Sender():
 
@@ -57,9 +59,7 @@ class Sender():
 
         loss = (-logprobs * error.detach()).mean()
         
-        acc = torch.mean(error.detach().double())
-
-        return loss, acc
+        return loss
 
 
 
@@ -111,7 +111,10 @@ class Receiver_Net(nn.Module):
             actions = dist.argmax(dim=1)
 
         logprobs = dist.log_prob(actions)
-        return actions, logprobs
+
+        entropy = dist.entropy()
+
+        return actions, logprobs, entropy
 
 class Receiver():
 
@@ -131,6 +134,4 @@ class Receiver():
 
         loss = (-logprobs * error.detach()).mean()
 
-        acc = torch.mean(error.detach().double())
-
-        return loss, acc
+        return loss
