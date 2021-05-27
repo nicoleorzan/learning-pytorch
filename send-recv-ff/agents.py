@@ -19,11 +19,16 @@ class Sender_Net(nn.Module):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, img1, img2):
+        
+        #print("img1.shape", img1.shape)
 
         img1 = img1.view(img1.size(0), -1)
+        #print("img1.shape", img1.shape)
         img2 = img2.view(img2.size(0), -1)
     
         out1 = self.policy_single(img1)
+        #print("out1.shape", out1.shape)
+
         out2 = self.policy_single(img2)
 
         combined = torch.cat((out1, out2),dim=1) # attaccate usando asse x (una sopra l'altra)
@@ -41,7 +46,7 @@ class Sender_Net(nn.Module):
 
         entropy = dist.entropy()
         
-        return actions, logprobs, entropy
+        return probs, actions, logprobs, entropy
 
 class Sender():
 
@@ -54,13 +59,24 @@ class Sender():
         self.model = Sender_Net(self.in_size, self.hidden_size, self.vocab_len, self.lr)
 
         self.training = True
+        self.baseline = 0
+        self.ent_reg = 0
+        self.n = 0
 
-    def loss(self, error, logprobs):
+    def loss(self, error, logprobs, entropy):
 
-        loss = (-logprobs * error.detach()).mean()
+        # added regularization to decrease variance 
+
+        #policy_loss = ((error.detach() - self.baseline)*(-logprobs)).mean()
+        #entropy_loss = -entropy.mean() * self.ent_reg
+
+        loss = (-logprobs * error.detach()).mean() #policy_loss + entropy_loss 
+
+        if self.training:
+            self.n += 1.
+            #self.baseline += (error.detach().mean().item() - self.baseline) / self.n
         
         return loss
-
 
 
 class Receiver_Net(nn.Module):
@@ -114,7 +130,7 @@ class Receiver_Net(nn.Module):
 
         entropy = dist.entropy()
 
-        return actions, logprobs, entropy
+        return probs, actions, logprobs, entropy
 
 class Receiver():
 
@@ -129,9 +145,21 @@ class Receiver():
         self.model = Receiver_Net(self.in_size, self.vocabulary_size_sender, self.hidden_size, self.n_actions, self.lr)
         
         self.training = True
+        self.baseline = 0
+        self.n = 0
+        self.ent_reg = 0
 
-    def loss(self, error, logprobs):
+    def loss(self, error, logprobs, entropy):
 
-        loss = (-logprobs * error.detach()).mean()
+        # added regularization to decrease variance 
 
+        #policy_loss = ((error.detach() - self.baseline)*(-logprobs)).mean()
+        #entropy_loss = -entropy.mean() * self.ent_reg
+
+        loss = (-logprobs * error.detach()).mean() #policy_loss + entropy_loss 
+
+        if self.training:
+            self.n += 1.
+            #self.baseline += (error.detach().mean().item() - self.baseline) / self.n
+        
         return loss
